@@ -1,0 +1,133 @@
+---
+title: "Credit Scoring Coursework 1"
+author: "Alexander John Pinches"
+date: "23 November 2018"
+output:
+  pdf_document:
+    highlight: espresso
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true
+fontsize: 9pt
+geometry: margin=0.5in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require("dplyr")
+```
+
+```{r, include=FALSE}
+load("LCdata_3.Rdata")
+set.seed(121)
+```
+#Preprocessing
+We can use `summary` to show summarise the predictors and `str` to see their structure to help determine what we need to do to the data before training our model.
+```{r}
+D1 <- D1[,c(1,2,4,5,10,33)]#remove unused predictors
+summary(D1)#summarise dataframe
+str(D1)#show structure
+```
+We can see that term may only take certain values, `emp_length_p` contains NA's and we should investigate how `loan_amnt` is distributed.`addr_state` appears to be in an appropriate form and doesnt need preprocessing as it's already of type factor and contains no NA's. Grade is a numeric in the dataframe and should be a factor with 7 levels by it's definition.
+```{r}
+unique(D1$term) #show unique values term takes
+D1 %>% group_by(emp_length_p) %>% tally() #show values it takes and ammount of each using dplyr package
+hist(D1$loan_amnt, main="Loan amount histogram",
+     xlab="Loan amount")#plot histogram of loan amount 
+```
+
+Using `unique` we can see term only takes two values so may be more appropriate as a factor with 2 levels. Using `dplyr` we can see `emp_length_p` contains NA's looking at the explanation of this predictor it is unclear whether the NA's are because they have no job or are random. So as they make up a small proportion of the data set we will remove those rows containing NA's. The data is also heavily skewed towards 10 although there's no way to transform the data to remove this. Looking at the histogram of loan amount we see that there may be some extreme values to combat this we will take the log of all the values to transform the dataset's distribution. We can see from the description of grade should be of type factor. We will make these changes below. 
+
+```{r, results='hide'}
+D1$grade <- as.factor(D1$grade) #set grade as factor
+D1$term <- as.factor(D1$term) #set term as factor
+D1$loan_amnt <- as.numeric(lapply(D1$loan_amnt,log)) #take log of loan_amnt
+D1 <- D1[which(!is.na(D1$emp_length_p),arr.ind = T),] #remove rows with NA in emp_length_p
+```
+
+We can now check that the data set is now in the form we want and show the distribution of the log of the loan amounts.
+
+```{r}
+summary(D1)#summarise dataframe
+str(D1)#show structure
+hist(D1$loan_amnt, main="Log loan amount histogram",
+     xlab="Log loan amount")#plot histogram of log loan amount
+```
+
+The data is in the intended forms and we have transformed loan amounts to a better distribution as shown in the histogram above.
+
+#Creating test and training data
+
+We can take a random sample without replacement from the rows of the dataset of size $2/3$ of the whole dataset. We then use the left over rows as the test set.
+```{r}
+sample <- sample(nrow(D1), size = 2*nrow(D1)/3)#create sample indicies
+outofbag <- setdiff(1:nrow(D1), sample)#calculate remaining indicies
+train <- D1[sample,]#make training data
+test <- D1[outofbag,]#make testing data
+```
+
+#Creating scorecard
+
+We first create a single logistic regression model using the predictors and the training dataset with the above transformations having been performed.Not including interaction terms.
+
+```{r}
+model <- glm(def_flag~loan_amnt+term+grade+emp_length_p+addr_state,
+             family = binomial(link='logit'),data = train)#train logit model
+```
+
+From this model we can extract all the components of a scorecard namley the coefficents and their p-values by using `coef` and `summary` along with their standard error and z value and then save it in memory. 
+
+```{r}
+scorecard <- coef(summary(model))#make score card from model
+scorecard#print score card
+```
+
+#Interrupting scorecard
+
+Using the significance level of 0.001 we can remove all coefficents with a p-value greater than this to see only the statistically significant coefficents of the model. We can the remove the intercept term and split these into positive and negative coefficents which shows their relationship with creditworthiness.
+
+```{r}
+significant <- scorecard[scorecard[,4]<=0.001,]#remove if above significance level
+significant <- significant[-1,] #remove intercept
+significant_pos <- significant[significant[,1]>0,]#positive relationship
+significant_neg <- significant[significant[,1]<0,]#negative relationship
+significant_pos; significant_neg #print
+```
+
+We can see the coefficents with a positive relation to defult and are significant are `loan_amnt`, `grade` for grades 2 to 7 not 1 and living in LA, NM or NV. The higher these are or if you belong to these catagories the less creditworthy you are. The significant coefficents with a negative relationship to defult are `term` being 60 and `emp_length_p`. So if you have a term length of 60 or have been employed for longer you are more creditworthy. This intuitively makes sense.
+
+The most important predictor of creditworthiness is whether they are in grades 2 to 7 these are statistically a lot more significant and therefore important than the next most important predictor which is employement length then having a 60 month term. Following these is loan amount and then state from this we can conclude as a whole grade is the most important predictor, then employement length, then term, then loan amount and then state being the least important predictor of default.   
+
+#ROC and AUC
+
+We first create predictions on the test and training data using the logistic regression model we built earlier and a function to calculate the points of the ROC curve and plot them and to print the AUC. 
+
+```{r}
+ptrain <- predict(model, newdata=train)#Create predictions 
+ptest <- predict(model, newdata=test)#Create predictions 
+
+roc <- function(r,p,s){#make function to calculate roc and auc
+  yav <- rep(tapply(r, p, mean), table(p))
+  rocx <- cumsum(yav)
+  rocy <- cumsum(1 - yav)
+  area <- sum(yav * (rocy - 0.5 * (1 - yav)))
+  x1 <- c(0, rocx)/sum(r)#calculate FPR
+  y1 <- c(0, rocy)/sum(1 - r)#Calculate TPR
+  auc <- area/(sum(r) * sum(1 - r))#Calculate AUC
+  print(auc)#print auc
+  plot(x1,y1,"l", main=s, xlab="FPR", ylab="TPR")#plot
+
+}
+```
+
+We then plot the two curves and show the area underneath them using the above function `roc`.
+
+```{r}
+par(mfrow=c(1,2))#make 1x2 space in plotting device
+roc(train$def_flag,ptrain,"ROC train")#roc and auc training
+roc(test$def_flag,ptest, "ROC test")#roc and auc testing
+```
+
+The AUC for both the test and training data are similar although a bit lower for the test set however this may not be statistically significant. This would suggest the model has similar performance in any data set suggesting therefore that our model hasn't overfitted to the training dataset as the performance in the test set is very similar.
+
+The AUC for both data sets is low suggesting the model isn't a good model for predicting default. It could be improved by either adding new predictors or using a penalised technique such as LASSO or Ridge as predctors like `emp_length_p` are heavily skewed.
